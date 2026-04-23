@@ -1,0 +1,307 @@
+
+你是**算网大脑后端开发工程师**，基于以下3份文档规范，生成**可直接运行**的Python FastAPI微服务代码，严格遵守所有约束，禁止自定义字段、禁止使用vn文件、核心实现**路径选择→TE隧道创建→ODUk资源返回**的光网调度逻辑。
+
+## 核心约束（强制遵守）
+1. **光网络规范**：100%遵循《中国联通ACTN SDOTN控制器北向接口技术要求》，**核心调度单元=TE隧道**，**核心资源=ODUk**，实现**路径预计算→选择路径→创建TE隧道→返回可用ODU类型+对应个数**，不使用任何vn相关文件/逻辑。
+2. **算力规范**：100%遵循你收到的《算力网络北向接口规范》，实现认证、推理作业、集群资源、性能监控接口。
+3. **架构规范**：严格遵循`算网大脑`目录结构，分`orchestrator_service`（编排）、`network_adapter`（光网适配）、`compute_adapter`（算力适配）三层微服务。
+4. **数据要求**：所有接口提供**标准JSON请求/响应结构**，**自定义可调用假Request-URL**，拓扑、路径、ODUk资源全部硬编码写死。
+5. **核心能力**：TE隧道接口**必须返回odu-resource-info**（包含ODU类型、可用数量、带宽）。
+6. **输出要求**：生成完整代码、数据结构、接口URL、核心函数、调用步骤，无语法错误，可直接docker运行。
+
+## 必须实现的核心流程
+1. 光网路径预计算→返回可选路径列表
+2. 选择指定路径→创建OTN TE隧道
+3. TE隧道创建成功→返回该路径**可用ODU种类+对应个数**
+4. 算力认证→查询集群资源→提交P/D分离推理作业
+5. 作业/隧道监控→异常回滚
+
+## 输出格式要求
+1. 按`算网大脑`目录结构生成每个文件完整代码
+2. 每个接口标注：Method、Request-URL、请求JSON、响应JSON
+3. 核心函数标注：功能、入参、出参、对应规范章节
+4. 提供完整调用顺序与启动步骤
+
+---
+
+# 二、算网大脑-光网+算力 全量接口JSON&URL规范文件
+## 通用说明
+1. 光网接口前缀：`/api/v1/actn`
+2. 算力接口前缀：`/api/v1/compute`
+3. 所有JSON结构**1:1对齐文档**，无自定义字段
+4. TE隧道接口**强制返回ODU类型+数量**
+5. 拓扑、路径、ODUk资源全部硬编码
+
+---
+
+## 第一部分：光网络（ACTN SDOTN）接口规范
+### 模块1：光网拓扑查询（硬编码）
+#### 1.1 查询全量光网拓扑
+- **Method**：GET
+- **Request-URL**：`/api/v1/actn/topology`
+- **请求JSON**：无
+- **响应JSON**：
+```json
+{
+  "code": 0,
+  "message": "success",
+  "data": {
+    "network-id": "otn-te-topology-001",
+    "provider-id": 100,
+    "client-id": 200,
+    "te-topology-id": "otn-te-topology-001",
+    "nodes": [
+      {
+        "node-id": "192.168.1.1",
+        "te-node-id": "192.168.1.1",
+        "tp-list": [
+          {"tp-id": "TP1:1001", "client-facing": true, "support-odu": ["ODU0","ODU4","ODUFlex"]}
+        ]
+      },
+      {
+        "node-id": "192.168.2.2",
+        "te-node-id": "192.168.2.2",
+        "tp-list": [
+          {"tp-id": "TP3:1002", "client-facing": true, "support-odu": ["ODU0","ODU4","ODUFlex"]}
+        ]
+      }
+    ],
+    "links": [
+      {
+        "link-id": "LINK-001",
+        "source-node": "192.168.1.1",
+        "source-tp": "TP1:1001",
+        "dest-node": "192.168.2.2",
+        "dest-tp": "TP3:1002",
+        "max-bandwidth": "100G",
+        "support-odu": ["ODU0","ODU1","ODU2","ODU3","ODU4","ODUFlex"]
+      }
+    ]
+  }
+}
+```
+
+### 模块2：路径预计算（选路核心）
+#### 2.1 透传业务路径预计算
+- **Method**：POST
+- **Request-URL**：`/api/v1/actn/path/precompute`
+- **请求JSON**：
+```json
+{
+  "request-id": "req-20260422-001",
+  "source-node": "192.168.1.1",
+  "destination-node": "192.168.2.2",
+  "odu-type": "ietf-otn-types:prot-ODU4",
+  "bandwidth": "100000",
+  "optimization-metric": "ietf-te-types:path-metric-delay-average"
+}
+```
+- **响应JSON**：
+```json
+{
+  "code": 0,
+  "message": "success",
+  "data": {
+    "request-id": "req-20260422-001",
+    "path-count": 1,
+    "path-list": [
+      {
+        "path-id": "PATH-001",
+        "node-list": ["192.168.1.1","192.168.2.2"],
+        "hop-count": 2,
+        "delay": 500,
+        "link-id-list": ["LINK-001"],
+        "support-odu": ["ODU0","ODU1","ODU2","ODU3","ODU4","ODUFlex"]
+      }
+    ]
+  }
+}
+```
+
+### 模块3：TE隧道管理（核心：返回ODU类型+个数）
+#### 3.1 创建OTN TE隧道
+- **Method**：POST
+- **Request-URL**：`/api/v1/actn/te/tunnel`
+- **请求JSON**：
+```json
+{
+  "tunnel-name": "tunnel-20260422-001",
+  "source": "192.168.1.1",
+  "destination": "192.168.2.2",
+  "path-id": "PATH-001",
+  "encoding": "ietf-te-types:lsp-encoding-oduk",
+  "switching-type": "ietf-te-types:switching-otn",
+  "provisioning-state": "ietf-te-types:tunnel-admin-state-up",
+  "te-bandwidth": {
+    "ietf-otn-tunnel:odu-type": "ietf-otn-types:prot-ODU4"
+  },
+  "protection": {"enable": true, "protection-type": "bidir-1-to-1"}
+}
+```
+- **响应JSON**（**核心：返回ODU资源**）：
+```json
+{
+  "code": 0,
+  "message": "success",
+  "data": {
+    "tunnel-name": "tunnel-20260422-001",
+    "path-id": "PATH-001",
+    "provisioning-state": "up",
+    "operational-state": "up",
+    "odu-resource-info": [
+      {"odu-type": "ODU0", "available-count": 10, "bandwidth": "1.25G"},
+      {"odu-type": "ODU4", "available-count": 1, "bandwidth": "100G"},
+      {"odu-type": "ODUFlex", "available-count": 8, "bandwidth": "flex"}
+    ],
+    "create-time": "2026-04-22T10:00:00Z"
+  }
+}
+```
+
+#### 3.2 查询指定TE隧道
+- **Method**：GET
+- **Request-URL**：`/api/v1/actn/te/tunnel/{tunnel-name}`
+- **请求JSON**：无
+- **响应JSON**：同3.1创建响应
+
+#### 3.3 删除TE隧道
+- **Method**：DELETE
+- **Request-URL**：`/api/v1/actn/te/tunnel/{tunnel-name}`
+- **请求JSON**：无
+- **响应JSON**：
+```json
+{"code":0,"message":"success","data":{"tunnel-name":"tunnel-20260422-001","status":"deleted"}}
+```
+
+---
+
+## 第二部分：算力网络接口规范
+### 模块1：认证管理
+#### 1.1 获取用户Token
+- **Method**：POST
+- **Request-URL**：`/api/v1/compute/auth/token`
+- **请求JSON**：
+```json
+{"username":"admin","password":"123456"}
+```
+- **响应JSON**：
+```json
+{
+  "respCode": 0,
+  "respError": "",
+  "respMessage": "success",
+  "respBody": {"core-sctoken": "compute-brain-token-20260422"},
+  "custCode": 0
+}
+```
+
+### 模块2：集群资源查询
+#### 2.1 查询集群资源概览
+- **Method**：GET
+- **Request-URL**：`/api/v1/compute/resource/cluster/overview`
+- **请求头**：`Authorization: Bearer compute-brain-token-20260422`
+- **响应JSON**：
+```json
+{
+  "respCode": 0,
+  "respError": "",
+  "respMessage": "success",
+  "respBody": {
+    "data": [
+      {
+        "cluster_name": "ShaoGuan-DC-A",
+        "cluster_type": "ai",
+        "total_card": 8,
+        "card_info": [{"card_type":"A100-80G","card_available_count":4}]
+      },
+      {
+        "cluster_name": "GuangZhou-DC-B",
+        "cluster_type": "ai",
+        "total_card": 8,
+        "card_info": [{"card_type":"A100-80G","card_available_count":4}]
+      }
+    ]
+  },
+  "custCode": 0
+}
+```
+
+### 模块3：推理作业管理（P/D分离）
+#### 3.1 提交推理作业（Proxy/Prefill/Decode）
+- **Method**：POST
+- **Request-URL**：`/api/v1/compute/inferjob`
+- **请求头**：`Authorization: Bearer compute-brain-token-20260422`
+- **请求JSON**：
+```json
+{
+  "TaskjobName": "pd-infer-20260422-001",
+  "ClusterName": "GuangZhou-DC-B",
+  "role": "proxy",
+  "GpuCount": 1,
+  "GpuType": "A100-80G",
+  "LlmModelId": 1001
+}
+```
+- **响应JSON**：
+```json
+{
+  "respCode":0,
+  "respError":"",
+  "respMessage":"success",
+  "respBody":{"jobId":10001},
+  "custCode":0
+}
+```
+
+### 模块4：作业性能监控
+#### 4.1 查询作业监控指标
+- **Method**：GET
+- **Request-URL**：`/api/v1/compute/monitor/job/{jobId}`
+- **请求头**：`Authorization: Bearer compute-brain-token-20260422`
+- **响应JSON**：
+```json
+{
+  "respCode":0,
+  "respError":"",
+  "respMessage":"success",
+  "respBody":{
+    "jobId":10001,
+    "metrics":[
+      {"metric_types":"infer_ttft","value_current":150,"unit":"ms"},
+      {"metric_types":"infer_tpot","value_current":20,"unit":"ms"}
+    ]
+  },
+  "custCode":0
+}
+```
+
+---
+
+## 第三部分：核心调用顺序（AI必须按此生成代码）
+1. 启动服务：network_adapter → compute_adapter → orchestrator_service
+2. 光网调度：查询拓扑 → 路径预计算 → 选择路径 → 创建TE隧道 → 获取ODU资源
+3. 算力调度：获取Token → 查询集群资源 → 提交Proxy/Prefill/Decode作业
+4. 监控：查询隧道状态 → 查询作业性能 → 异常触发回滚
+5. 销毁：删除算力作业 → 删除TE隧道 → 释放ODUk资源
+
+---
+
+## 第四部分：核心函数清单（AI必须实现）
+### 光网适配函数
+1. `get_topology()` → 查询拓扑
+2. `precompute_path(source, dest, odu_type)` → 路径预计算
+3. `create_te_tunnel(tunnel_param)` → 创建隧道，返回ODU资源
+4. `get_te_tunnel(tunnel_name)` → 查询隧道
+5. `delete_te_tunnel(tunnel_name)` → 删除隧道
+
+### 算力适配函数
+1. `get_token(username, password)` → 获取认证
+2. `get_cluster_resource()` → 查询集群资源
+3. `submit_infer_job(job_param)` → 提交推理作业
+4. `get_job_metrics(jobId)` → 查询作业监控
+
+### 编排核心函数
+1. `pd_deploy_workflow()` → P/D分离部署全流程
+2. `full_rollback()` → 全链路回滚
+3. `state_machine_update()` → 状态机管理
+
