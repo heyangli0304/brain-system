@@ -41,15 +41,35 @@
         <el-card header="对话">
           <div class="chat-container" ref="chatRef">
             <div v-for="(msg, idx) in messages" :key="idx" :class="['chat-msg', msg.role === 'user' ? 'msg-user' : 'msg-assistant']">
-              <div class="msg-content">{{ msg.content }}</div>
+              <div class="msg-content">
+                <p v-if="msg.text">{{ msg.text }}</p>
+                <div v-if="msg.images && msg.images.length > 0" class="msg-images">
+                  <img v-for="(img, imgIdx) in msg.images" :key="imgIdx" :src="img" class="msg-img" />
+                </div>
+              </div>
             </div>
           </div>
           <div class="chat-input">
-            <el-input v-model="inputText" placeholder="输入您的问题..." @keyup.enter="sendMessage" :disabled="!selectedJob">
-              <template #append>
-                <el-button @click="sendMessage" :disabled="!selectedJob || !inputText">发送</el-button>
-              </template>
-            </el-input>
+            <div v-if="uploadedImages.length > 0" class="image-preview">
+              <div v-for="(img, idx) in uploadedImages" :key="idx" class="preview-item">
+                <img :src="img" class="preview-img" />
+                <el-button size="small" icon="el-icon-delete" @click="removeImage(idx)" />
+              </div>
+            </div>
+            <div class="input-row">
+              <el-button type="text" icon="el-icon-image" @click="triggerImageUpload" :disabled="!selectedJob">上传图片</el-button>
+              <input type="file" ref="imageInputRef" accept="image/*" multiple hidden @change="handleImageUpload" />
+              <el-input 
+                v-model="inputText" 
+                placeholder="输入您的问题..." 
+                @keyup.enter="sendMessage" 
+                :disabled="!selectedJob"
+              >
+                <template #append>
+                  <el-button @click="sendMessage" :disabled="!selectedJob || (!inputText && uploadedImages.length === 0)">发送</el-button>
+                </template>
+              </el-input>
+            </div>
           </div>
         </el-card>
       </el-col>
@@ -69,17 +89,20 @@ const gpuType = ref("A100-80G")
 const streamMode = ref("true")
 const inputText = ref("")
 const chatRef = ref<HTMLDivElement>()
+const imageInputRef = ref<HTMLInputElement>()
 const loading = ref(false)
+const uploadedImages = ref<string[]>([])
 
-// 从后端获取已部署的作业列表
 const jobList = ref<any[]>([])
-
-// 节点映射（从后端动态获取）
 const nodeMap = ref<Record<string, string>>({})
 
-const messages = ref<{ role: string; content: string }[]>([])
+interface ChatMessage {
+  role: string
+  text?: string
+  images?: string[]
+}
+const messages = ref<ChatMessage[]>([])
 
-// 从后端获取拓扑，构建节点映射
 async function fetchNodeMap() {
   try {
     const res: any = await getNetworkTopology()
@@ -89,7 +112,6 @@ async function fetchNodeMap() {
       const nodes = res.data.networks[0].node
       nodeMap.value = nodes.reduce((map: any, node: any) => {
         const nodeId = node["node-id"] || node["ietf-te-topology:te-node-id"]
-        // 优先使用 label（如：韶关数据中心 1 号），其次使用 name（如：ShaoGuan-DC-1）
         const nodeName = node["label"] || node["name"] || nodeId
         map[nodeId] = nodeName
         return map
@@ -104,10 +126,8 @@ async function fetchNodeMap() {
     }
   } catch (error: any) {
     console.error("获取拓扑失败:", error)
-    // 如果获取失败，使用默认映射（降级方案）
     ElMessage.warning("获取节点映射失败，使用默认配置")
     
-    // 默认节点映射（与后端 topology.py 保持一致）
     nodeMap.value = {
       "10.10.10.1": "ShaoGuan-DC-1",
       "10.10.10.2": "ShaoGuan-DC-2",
@@ -126,20 +146,15 @@ async function fetchNodeMap() {
 
 async function fetchJobList() {
   try {
-    // 调用后端接口获取已部署的作业列表
     const res: any = await getTaskList()
     if (res?.data) {
-      // 解析后端返回的 TE 隧道数据，转换为作业列表
       jobList.value = res.data.map((tunnel: any, idx: number) => {
-        // 使用节点 ID 获取映射后的名称
         const sourceNode = tunnel.source || ""
         const destNode = tunnel.destination || ""
         
-        // 从动态获取的 nodeMap 中查找，如果没有则显示原始 ID
         const sourceCity = nodeMap.value[sourceNode] || sourceNode
         const destCity = nodeMap.value[destNode] || destNode
         
-        // 使用任务名称（如果没有则使用默认名称）
         const taskName = tunnel["task-name"] || `P/D 推理服务 ${idx + 1}`
         
         return {
@@ -150,7 +165,6 @@ async function fetchJobList() {
       })
     }
     
-    // 如果没有数据，使用空数组（不显示模拟数据）
     if (jobList.value.length === 0) {
       console.log("暂无已部署的推理服务")
     }
@@ -161,10 +175,41 @@ async function fetchJobList() {
   }
 }
 
-async function sendMessage() {
-  console.log("发送消息，selectedJob:", selectedJob.value, "inputText:", inputText.value)
+function triggerImageUpload() {
+  imageInputRef.value?.click()
+}
+
+function handleImageUpload(event: Event) {
+  const target = event.target as HTMLInputElement
+  const files = target.files
+  if (!files) return
   
-  if (!inputText.value.trim()) {
+  Array.from(files).forEach(file => {
+    if (file.type.startsWith("image/")) {
+      const reader = new FileReader()
+      reader.onload = (e) => {
+        const result = e.target?.result as string
+        if (result) {
+          uploadedImages.value.push(result)
+        }
+      }
+      reader.readAsDataURL(file)
+    } else {
+      ElMessage.warning("请选择图片文件")
+    }
+  })
+  
+  target.value = ""
+}
+
+function removeImage(index: number) {
+  uploadedImages.value.splice(index, 1)
+}
+
+async function sendMessage() {
+  console.log("发送消息，selectedJob:", selectedJob.value, "inputText:", inputText.value, "images:", uploadedImages.value.length)
+  
+  if (!inputText.value.trim() && uploadedImages.value.length === 0) {
     console.log("输入为空")
     return
   }
@@ -173,9 +218,15 @@ async function sendMessage() {
     return
   }
   
-  messages.value.push({ role: "user", content: inputText.value })
+  messages.value.push({ 
+    role: "user", 
+    text: inputText.value || undefined,
+    images: uploadedImages.value.length > 0 ? [...uploadedImages.value] : undefined
+  })
+  
   const userMsg = inputText.value
   inputText.value = ""
+  uploadedImages.value = []
   loading.value = true
   
   console.log("消息已添加，当前消息数:", messages.value.length)
@@ -187,15 +238,16 @@ async function sendMessage() {
   }
   
   try {
-    // 调用后端推理接口
-    // 实际应该调用推理服务的 chat/completions 接口
     ElMessage.info("正在调用推理服务...")
     
-    // 模拟响应（实际应该等待后端返回）
     setTimeout(() => {
+      const responseText = userMsg 
+        ? `这是一个模拟响应。\n\n您问的是："${userMsg}"\n\n实际推理功能需要调用已部署的推理服务 API。`
+        : "这是一个模拟响应。\n\n您上传了图片，实际推理功能会分析图片内容。"
+        
       messages.value.push({ 
         role: "assistant", 
-        content: `这是一个模拟响应。\n\n您问的是："${userMsg}"\n\n实际推理功能需要调用已部署的推理服务 API。` 
+        text: responseText 
       })
       loading.value = false
       console.log("响应已添加，当前消息数:", messages.value.length)
@@ -210,7 +262,6 @@ async function sendMessage() {
 }
 
 onMounted(() => {
-  // 先获取节点映射，再获取作业列表
   fetchNodeMap().then(() => {
     fetchJobList()
   }).catch(() => {
@@ -237,7 +288,7 @@ onMounted(() => {
     margin-bottom: 12px;
     
     .chat-msg { 
-      margin-bottom: 12px; 
+      margin-bottom: 16px; 
       display: flex;
       
       &.msg-user { 
@@ -247,6 +298,10 @@ onMounted(() => {
           background: #409eff; 
           color: #fff; 
         } 
+        
+        .msg-img {
+          border: 2px solid #409eff;
+        }
       }
       
       &.msg-assistant { 
@@ -255,28 +310,79 @@ onMounted(() => {
         .msg-content { 
           background: #fff; 
           border: 1px solid #e4e7ed; 
-        } 
+        }
+        
+        .msg-img {
+          border: 1px solid #e4e7ed;
+        }
       }
       
       .msg-content { 
-        padding: 8px 12px; 
+        padding: 12px; 
         border-radius: 8px; 
         max-width: 70%; 
         line-height: 1.5; 
         word-wrap: break-word;
+        
+        p {
+          margin: 0;
+          margin-bottom: 8px;
+        }
+        
+        p:last-child {
+          margin-bottom: 0;
+        }
+      }
+      
+      .msg-images {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 8px;
+      }
+      
+      .msg-img {
+        max-width: 150px;
+        max-height: 150px;
+        border-radius: 4px;
+        object-fit: cover;
       }
     }
   }
   
-  .chat-input { 
-    margin-top: 12px;
-    
-    :deep(.el-input__wrapper) {
-      border-radius: 4px;
+  .chat-input {
+    .image-preview {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      margin-bottom: 12px;
+      
+      .preview-item {
+        position: relative;
+        
+        .preview-img {
+          width: 80px;
+          height: 80px;
+          object-fit: cover;
+          border-radius: 4px;
+        }
+        
+        .el-button {
+          position: absolute;
+          top: -8px;
+          right: -8px;
+        }
+      }
     }
     
-    :deep(.el-button) {
-      margin-left: 8px;
+    .input-row {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      
+      .el-input {
+        flex: 1;
+      }
     }
   }
 }
