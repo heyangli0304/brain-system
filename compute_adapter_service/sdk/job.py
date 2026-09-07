@@ -16,7 +16,7 @@
 
 import requests
 from pydantic import BaseModel
-from typing import Iterable, Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any
 
 
 # ==========================================
@@ -226,9 +226,6 @@ class CreateAlgorithmVersionResponse(BaseModel):
 
 class SubmitInferJobRespBody(BaseModel):
     jobId: int
-    adapterJobId: Optional[int] = None
-    inferenceAddr: Optional[str] = None
-    role: Optional[str] = None
 
 class SubmitInferJobResponse(BaseModel):
     respCode: int
@@ -344,18 +341,6 @@ class JobClient:
         response = requests.post(url, json=payload, headers=self.headers)
         return response.json()
 
-    def stream_events(self) -> Iterable[bytes]:
-        url = f"{self.base_url}/sys/notification/stream"
-        with requests.get(url, headers=self.headers, stream=True, timeout=(10, None)) as response:
-            response.raise_for_status()
-            for line in response.iter_lines():
-                yield line + b"\n"
-
-    def unsubscribe_events(self, subscription_id: str = None) -> dict:
-        url = f"{self.base_url}/sys/notification/webhook/unsubscribe"
-        params = {"subscription_id": subscription_id} if subscription_id else None
-        return requests.delete(url, headers=self.headers, params=params).json()
-
     # ==========================================
     # 环境镜像
     # ==========================================
@@ -468,30 +453,19 @@ class JobClient:
     # 提交推理作业
     # ==========================================
 
-    def submit_pd_infer_job(
-        self, taskjob_name, cluster_name, account, partition, qos=None,
-        node_count=1, gpu_count=None, gpu_type=None, memory_mb=None,
-        core_count=1, time_limit_minutes=None, mount_points=None, dataset=None,
-        model=None, algorithm=None, vram=None, data_dir=None,
-        working_directory=None, llm_model_id=None, role="",
-        prefiller_hosts=None, prefiller_ports=None, decoder_hosts=None,
-        decoder_ports=None, _allow_incomplete_proxy=False,
-    ) -> dict:
+    def submit_infer_job(self, taskjob_name, cluster_name, account, partition,
+                         qos, node_count, gpu_count, gpu_type, memory_mb, core_count,
+                         time_limit_minutes, mount_points, dataset, model, algorithm,
+                         vram, working_directory, llm_model_id, role, proxy_export_url=None) -> dict:
         """
-        POST /ai_sc/adapter/pdinferjobs
-        """
-        role = {"prefill": "Prefill", "decode": "Decode", "proxy": "Proxy"}.get(
-            (role or "").lower(), role or ""
-        )
-        if role not in {"", "Prefill", "Decode", "Proxy"}:
-            raise ValueError("Role must be one of: '', Prefill, Decode, Proxy")
-        addresses = (prefiller_hosts, prefiller_ports, decoder_hosts, decoder_ports)
-        if role == "" and any(addresses):
-            raise ValueError("Ordinary inference jobs cannot include Prefiller/Decoder addresses")
-        if role == "Proxy" and not all(addresses) and not _allow_incomplete_proxy:
-            raise ValueError("Proxy jobs require PrefillerHosts/Ports and DecoderHosts/Ports")
+        POST /ai_sc/adapter/inferjobs
 
-        url = f"{self.base_url}/ai_sc/adapter/pdinferjobs"
+        提交Proxy作业: ClusterName=DC-B, role="proxy"
+        提交P实例:     ClusterName=DC-A, role="Prefill", 需填proxy_export_url
+        提交D实例:     ClusterName=DC-B, role="Decode",  需填proxy_export_url
+        Proxy跟随D池部署，保证流式输出稳定性
+        """
+        url = f"{self.base_url}/ai_sc/adapter/inferjobs"
         payload = {
             "TaskjobName": taskjob_name, "ClusterName": cluster_name,
             "Account": account, "Partition": partition, "Qos": qos,
@@ -499,96 +473,44 @@ class JobClient:
             "MemoryMb": memory_mb, "CoreCount": core_count,
             "TimeLimitMinutes": time_limit_minutes, "MountPoints": mount_points,
             "Dataset": dataset, "Model": model, "Algorithm": algorithm,
-            "Vram": vram, "DataDir": data_dir, "WorkingDirectory": working_directory,
-            "LlmModelId": llm_model_id, "Role": role,
-            "PrefillerHosts": prefiller_hosts, "PrefillerPorts": prefiller_ports,
-            "DecoderHosts": decoder_hosts, "DecoderPorts": decoder_ports,
+            "Vram": vram, "WorkingDirectory": working_directory,
+            "LlmModelId": llm_model_id, "role": role,
         }
-        payload = {key: value for key, value in payload.items() if value is not None}
+        if proxy_export_url:
+            payload["proxy_export_url"] = proxy_export_url
         response = requests.post(url, json=payload, headers=self.headers)
         return response.json()
-
-    def submit_infer_job(self, taskjob_name, cluster_name, account, partition,
-                         qos, node_count, gpu_count, gpu_type, memory_mb, core_count,
-                         time_limit_minutes, mount_points, dataset, model, algorithm,
-                         vram, working_directory, llm_model_id, role,
-                         proxy_export_url=None, **kwargs) -> dict:
-        return self.submit_pd_infer_job(
-            taskjob_name, cluster_name, account, partition, qos, node_count,
-            gpu_count, gpu_type, memory_mb, core_count, time_limit_minutes,
-            mount_points, str(dataset) if dataset is not None else None,
-            str(model) if model is not None else None,
-            str(algorithm) if algorithm is not None else None, vram,
-            kwargs.get("data_dir"), working_directory, llm_model_id, role,
-            kwargs.get("prefiller_hosts"), kwargs.get("prefiller_ports"),
-            kwargs.get("decoder_hosts"), kwargs.get("decoder_ports"), True,
-        )
 
     # ==========================================
     # 获取作业详情
     # ==========================================
 
-    def get_job_detail(self, job_id, cluster=None, job_type="pd") -> dict:
+    def get_job_detail(self, job_id, cluster, job_type) -> dict:
         """
-        GET /ai_sc/adapter/getSpecPDJob
+        GET /ai_sc/adapter/getSpecJob
 
         当算网大脑接收Proxy启动成功的作业状态变更消息时调用
         用这个接口获取proxy的url，作为PD作业的参数进行部署
         """
-        url = f"{self.base_url}/ai_sc/adapter/getSpecPDJob"
-        params = {"jobId": job_id, "type": job_type}
-        if cluster:
-            params["cluster"] = cluster
+        url = f"{self.base_url}/ai_sc/adapter/getSpecJob"
+        params = {"jobId": job_id, "cluster": cluster, "type": job_type}
         response = requests.get(url, headers=self.headers, params=params)
         return response.json()
-
-    def cancel_pd_job(self, job_id, cluster=None) -> dict:
-        url = f"{self.base_url}/ai_sc/adapter/CancelSpecPDJob"
-        params = {"jobId": job_id}
-        if cluster:
-            params["cluster"] = cluster
-        return requests.delete(url, headers=self.headers, params=params).json()
-
-    def query_pd_job_time_limit(self, job_id, cluster=None) -> dict:
-        url = f"{self.base_url}/ai_sc/adapter/queryPDJobTimeLimit"
-        params = {"jobId": job_id}
-        if cluster:
-            params["cluster"] = cluster
-        return requests.get(url, headers=self.headers, params=params).json()
-
-    def change_pd_job_time_limit(self, job_id, delta_minutes, cluster=None) -> dict:
-        url = f"{self.base_url}/ai_sc/adapter/changePDJobTimeLimit"
-        payload = {"JobId": job_id, "DeltaMinutes": delta_minutes}
-        if cluster:
-            payload["Cluster"] = cluster
-        return requests.post(url, json=payload, headers=self.headers).json()
 
     # ==========================================
     # 请求模型推理
     # ==========================================
 
-    def chat_completions(self, inference_addr, model, messages, stream=False,
-                         max_tokens=None, content_type="application/json") -> dict:
+    def chat_completions(self, job_id, model, messages, stream, content_type="application/json") -> dict:
         """
-        POST http://{inferenceAddr}/v1/chat/completions
+        POST /modelProxy/:jobId/v1/chat/completions
 
         等待所有P/D作业状态变更为RUNNING后调用
         算网大脑直接将用户请求转发到proxy所在集群
         proxy负责调度用户请求到具体的P/D实例
         """
-        url = f"{inference_addr.rstrip('/')}/v1/chat/completions"
-        headers = {"Content-Type": content_type}
+        url = f"{self.base_url}/modelProxy/{job_id}/v1/chat/completions"
+        headers = {"Authorization": self.headers["Authorization"], "Content-Type": content_type}
         payload = {"model": model, "messages": messages, "stream": stream}
-        if max_tokens is not None:
-            payload["max_tokens"] = max_tokens
         response = requests.post(url, json=payload, headers=headers)
         return response.json()
-
-    def chat_completions_for_job(self, job_id, model, messages, stream=False,
-                                 max_tokens=None) -> dict:
-        detail = self.get_job_detail(int(job_id))
-        body = detail.get("respBody", {})
-        inference_addr = body.get("taskjob_model_export_url") or body.get("taskjob_model_addr")
-        if not inference_addr:
-            raise RuntimeError("Inference address is not ready")
-        return self.chat_completions(inference_addr, model, messages, stream, max_tokens)

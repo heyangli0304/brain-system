@@ -29,7 +29,7 @@ class RequestHttp {
     this.service.interceptors.response.use(
       (response: AxiosResponse) => {
         const { data } = response
-        if (data.respCode !== undefined && ![0, 200].includes(data.respCode)) {
+        if (data.respCode !== undefined && data.respCode !== 0) {
           ElMessage.error(data.respError || "请求失败")
           if (data.respCode === 401) {
             localStorage.removeItem("brain_token")

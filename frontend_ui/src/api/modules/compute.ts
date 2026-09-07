@@ -5,15 +5,7 @@ export function createDirectory(fs_dir: string, cluster: string) {
 }
 
 export function subscribeEvents(event_types: string[], description?: string) {
-  return http.post<any>("/api/v1/compute/notification/webhook/subscribe", { event_types, description })
-}
-
-export function unsubscribeEvents(subscription_id?: string) {
-  return http.delete<any>("/api/v1/compute/notification/webhook/unsubscribe", { subscription_id })
-}
-
-export function notificationStreamUrl() {
-  return "/api/v1/compute/notification/stream"
+  return http.post<any>("/api/v1/compute/notification/subscribe", { event_types, description })
 }
 
 export function getWebhookJobStatus(job_id: number) {

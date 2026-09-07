@@ -118,23 +118,21 @@ class MonitorClient:
     # 性能监控
     # ==========================================
 
-    def get_job_metrics(self, job_id, cluster=None, metric_types=None, start_time=None, end_time=None) -> dict:
+    def get_job_metrics(self, job_id, cluster, metric_types=None, start_time=None, end_time=None) -> dict:
         """
-        GET /ai_sc/adapter/getPDJobMonitorMetrics
+        GET /ai_sc/monitor/metrics/job
 
         metric_types可选值：gpu_utilization, kvcache_usage, gpu_mem_used,
                            ttft, tpot, qps（逗号分隔）
         """
-        url = f"{self.base_url}/ai_sc/adapter/getPDJobMonitorMetrics"
-        params = {"jobId": job_id}
-        if cluster:
-            params["cluster"] = cluster
+        url = f"{self.base_url}/ai_sc/monitor/metrics/job"
+        params = {"jobId": job_id, "cluster": cluster}
         if metric_types:
-            params["metricTypes"] = metric_types
+            params["metric_types"] = metric_types
         if start_time:
-            params["startTime"] = start_time
+            params["start_time"] = start_time
         if end_time:
-            params["endTime"] = end_time
+            params["end_time"] = end_time
         response = requests.get(url, headers=self.headers, params=params)
         return response.json()
 
